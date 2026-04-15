@@ -9,9 +9,12 @@ export const runtime = "nodejs";
 export async function POST(req: NextRequest) {
   const session = await getSession();
 
-  // Resolve API key: prefer user's OAuth token, fall back to env key for dev
-  const apiKey = session?.accessToken ?? process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
+  // Resolve credentials:
+  // - OAuth token from `claude setup-token`  → authToken (Authorization: Bearer)
+  // - Fallback ANTHROPIC_API_KEY for local dev → apiKey (x-api-key)
+  const oauthToken = session?.accessToken ?? null;
+  const devApiKey = process.env.ANTHROPIC_API_KEY ?? null;
+  if (!oauthToken && !devApiKey) {
     return new Response(JSON.stringify({ error: "Not authenticated" }), {
       status: 401,
     });
@@ -25,11 +28,14 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: "Unknown agent" }), { status: 400 });
   }
 
-  const client = new Anthropic({ apiKey });
+  // Use authToken for OAuth bearer tokens, apiKey for classic API keys
+  const client = oauthToken
+    ? new Anthropic({ authToken: oauthToken })
+    : new Anthropic({ apiKey: devApiKey! });
 
   // Stream the response back
   const stream = await client.messages.stream({
-    model: "claude-opus-4-6",
+    model: "claude-opus-4-5",
     max_tokens: 1024,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     thinking: { type: "adaptive" } as any,
