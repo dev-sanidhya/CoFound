@@ -1,159 +1,269 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Brain, ArrowRight, ArrowLeft, Check } from "lucide-react";
-import { saveBrain, CompanyBrain, FundingStage } from "@/lib/brain";
+import { Brain, ArrowRight, ArrowLeft, Check, AlertCircle } from "lucide-react";
+import { saveBrain, loadBrain, CompanyBrain, FundingStage } from "@/lib/brain";
 
-const STAGES: { value: FundingStage; label: string }[] = [
-  { value: "idea", label: "Just an idea" },
-  { value: "pre-seed", label: "Pre-seed" },
-  { value: "seed", label: "Seed" },
-  { value: "series-a", label: "Series A" },
-  { value: "series-b+", label: "Series B+" },
+// ── Data ───────────────────────────────────────────────────────────────────────
+
+const STAGES: { value: FundingStage; label: string; description: string }[] = [
+  { value: "idea",      label: "Idea",      description: "Just an idea" },
+  { value: "pre-seed",  label: "Pre-seed",  description: "Building MVP" },
+  { value: "seed",      label: "Seed",      description: "Early traction" },
+  { value: "series-a",  label: "Series A",  description: "Scaling" },
+  { value: "series-b+", label: "Series B+", description: "Growth" },
 ];
 
-type Step = {
-  id: number;
-  title: string;
-  subtitle: string;
-};
-
-const STEPS: Step[] = [
-  { id: 1, title: "The idea", subtitle: "What are you building?" },
-  { id: 2, title: "Your market", subtitle: "Who is it for?" },
-  { id: 3, title: "Traction", subtitle: "Where are you now?" },
-  { id: 4, title: "Direction", subtitle: "Where are you headed?" },
+const STEPS = [
+  {
+    id: 1,
+    label: "The idea",
+    title: "What are you building?",
+    description: "Give your council the foundation — the clearer this is, the sharper the advice.",
+  },
+  {
+    id: 2,
+    label: "Your market",
+    title: "Who is it for?",
+    description: "A well-defined ICP unlocks better GTM, pricing, and positioning advice.",
+  },
+  {
+    id: 3,
+    label: "Traction",
+    title: "Where are you now?",
+    description: "Honest metrics help your council give stage-appropriate advice, not generic fluff.",
+  },
+  {
+    id: 4,
+    label: "Direction",
+    title: "Where are you headed?",
+    description: "Your 90-day goal and biggest challenge focus the entire council's output.",
+  },
 ];
 
-const empty: Omit<CompanyBrain, "createdAt" | "updatedAt"> = {
-  startupName: "",
-  oneLiner: "",
-  problem: "",
-  solution: "",
-  targetAudience: "",
-  icp: "",
-  marketSize: "",
-  fundingStage: "idea",
-  currentMrr: "",
-  userCount: "",
-  topMetric: "",
-  gtmGoal: "",
-  biggestChallenge: "",
-  nextMilestone: "",
+type FormData = Omit<CompanyBrain, "createdAt" | "updatedAt">;
+
+const empty: FormData = {
+  startupName: "", oneLiner: "", problem: "", solution: "",
+  targetAudience: "", icp: "", marketSize: "",
+  fundingStage: "idea", currentMrr: "", userCount: "", topMetric: "",
+  gtmGoal: "", biggestChallenge: "", nextMilestone: "",
 };
 
-function Field({
-  label,
-  hint,
-  value,
-  onChange,
-  multiline,
-  placeholder,
-}: {
+// Required fields per step
+const REQUIRED: Record<number, (keyof FormData)[]> = {
+  1: ["startupName", "oneLiner", "problem"],
+  2: ["targetAudience", "icp"],
+  3: ["topMetric"],
+  4: ["gtmGoal", "biggestChallenge"],
+};
+
+// ── Field component ────────────────────────────────────────────────────────────
+
+interface FieldProps {
   label: string;
   hint?: string;
   value: string;
   onChange: (v: string) => void;
-  multiline?: boolean;
   placeholder?: string;
-}) {
+  multiline?: boolean;
+  required?: boolean;
+  hasError?: boolean;
+  maxLength?: number;
+  rows?: number;
+}
+
+function Field({
+  label, hint, value, onChange, placeholder,
+  multiline, required, hasError, maxLength, rows = 3,
+}: FieldProps) {
+  const baseInput = [
+    "w-full rounded-xl border bg-card px-4 py-3 text-sm text-foreground",
+    "placeholder:text-muted-foreground focus:outline-none transition-all duration-200",
+    hasError
+      ? "border-destructive/60 focus:ring-2 focus:ring-destructive/20"
+      : "border-border focus:border-primary/40 focus:ring-2 focus:ring-primary/10",
+  ].join(" ");
+
   return (
     <div className="flex flex-col gap-1.5">
-      <label className="text-sm font-medium text-foreground">{label}</label>
-      {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+      {/* Label row */}
+      <div className="flex items-center justify-between gap-2">
+        <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
+          {label}
+          {required && <span className="text-primary text-xs">*</span>}
+          {!required && (
+            <span className="text-[10px] font-normal text-muted-foreground bg-muted rounded px-1.5 py-0.5">
+              optional
+            </span>
+          )}
+        </label>
+        {multiline && maxLength && (
+          <span className={`text-[10px] flex-shrink-0 ${value.length > maxLength * 0.9 ? "text-destructive" : "text-muted-foreground"}`}>
+            {value.length}/{maxLength}
+          </span>
+        )}
+      </div>
+
+      {/* Hint */}
+      {hint && <p className="text-xs text-muted-foreground leading-relaxed">{hint}</p>}
+
+      {/* Input */}
       {multiline ? (
         <textarea
-          className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-none"
-          rows={3}
+          className={`${baseInput} resize-none leading-relaxed`}
+          rows={rows}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
+          maxLength={maxLength}
         />
       ) : (
         <input
           type="text"
-          className="rounded-lg border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+          className={baseInput}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
         />
       )}
+
+      {/* Inline error */}
+      {hasError && (
+        <p className="flex items-center gap-1 text-xs text-destructive">
+          <AlertCircle className="w-3 h-3 flex-shrink-0" />
+          This field is required
+        </p>
+      )}
     </div>
   );
 }
 
+// ── Page ───────────────────────────────────────────────────────────────────────
+
 export default function OnboardingPage() {
   const router = useRouter();
   const [step, setStep] = useState(1);
-  const [data, setData] = useState(empty);
+  const [data, setData] = useState<FormData>(empty);
+  const [errorFields, setErrorFields] = useState<Set<keyof FormData>>(new Set());
+  const [isEditing, setIsEditing] = useState(false);
 
-  function set<K extends keyof typeof empty>(key: K, value: typeof empty[K]) {
+  // Pre-fill if brain already exists (editing flow)
+  useEffect(() => {
+    const existing = loadBrain();
+    if (existing) {
+      const { createdAt: _c, updatedAt: _u, ...rest } = existing;
+      setData(rest);
+      setIsEditing(true);
+    }
+  }, []);
+
+  function set<K extends keyof FormData>(key: K, value: FormData[K]) {
     setData((prev) => ({ ...prev, [key]: value }));
+    // Clear error for this field as soon as user types
+    setErrorFields((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
   }
 
-  function canAdvance(): boolean {
-    if (step === 1) return !!data.startupName && !!data.oneLiner && !!data.problem;
-    if (step === 2) return !!data.targetAudience && !!data.icp;
-    if (step === 3) return !!data.topMetric;
-    if (step === 4) return !!data.gtmGoal && !!data.biggestChallenge;
-    return true;
+  function handleNext() {
+    const required = REQUIRED[step] ?? [];
+    const missing = required.filter((k) => !data[k]?.toString().trim());
+    if (missing.length > 0) {
+      setErrorFields(new Set(missing));
+      return;
+    }
+    setErrorFields(new Set());
+    setStep((s) => s + 1);
+  }
+
+  function handleBack() {
+    setErrorFields(new Set());
+    setStep((s) => s - 1);
   }
 
   function handleFinish() {
+    const required = REQUIRED[step] ?? [];
+    const missing = required.filter((k) => !data[k]?.toString().trim());
+    if (missing.length > 0) {
+      setErrorFields(new Set(missing));
+      return;
+    }
     const now = new Date().toISOString();
-    saveBrain({ ...data, createdAt: now, updatedAt: now });
+    saveBrain({
+      ...data,
+      createdAt: isEditing ? (loadBrain()?.createdAt ?? now) : now,
+      updatedAt: now,
+    });
     router.push("/dashboard");
   }
 
+  const currentStep = STEPS[step - 1];
+
   return (
-    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 py-12">
-      <div className="w-full max-w-lg flex flex-col gap-8">
-        {/* Header */}
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-            <Brain className="w-4 h-4 text-primary-foreground" />
+    <div className="min-h-screen bg-background flex flex-col items-center justify-center px-6 py-12 relative overflow-hidden">
+      {/* Subtle background */}
+      <div className="absolute inset-0 pointer-events-none bg-[radial-gradient(ellipse_50%_40%_at_50%_0%,hsl(210_100%_60%/0.04)_0%,transparent_70%)]" />
+
+      <div className="relative w-full max-w-lg flex flex-col gap-8">
+
+        {/* ── Logo ──────────────────────────────────────────────────── */}
+        <div className="flex items-center gap-2.5">
+          <div className="w-8 h-8 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center">
+            <Brain className="w-4 h-4 text-primary" />
           </div>
-          <span className="font-semibold text-foreground">CoFound</span>
+          <span className="font-bold text-foreground">CoFound</span>
+          {isEditing && (
+            <span className="text-xs text-muted-foreground bg-muted rounded-full px-2 py-0.5 ml-1">
+              Editing brain
+            </span>
+          )}
         </div>
 
-        {/* Progress */}
-        <div className="flex items-center gap-2">
-          {STEPS.map((s) => (
-            <div key={s.id} className="flex items-center gap-2 flex-1">
-              <div
-                className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-medium flex-shrink-0 transition-colors ${
-                  s.id < step
-                    ? "bg-primary text-primary-foreground"
-                    : s.id === step
-                    ? "bg-primary/20 text-primary border border-primary"
-                    : "bg-muted text-muted-foreground"
-                }`}
-              >
-                {s.id < step ? <Check className="w-3 h-3" /> : s.id}
-              </div>
-              {s.id < STEPS.length && (
+        {/* ── Step progress ─────────────────────────────────────────── */}
+        <div className="flex items-center gap-0">
+          {STEPS.map((s, i) => (
+            <div key={s.id} className="flex items-center flex-1 last:flex-none">
+              <div className="flex flex-col items-center gap-1.5">
                 <div
-                  className={`flex-1 h-px transition-colors ${
-                    s.id < step ? "bg-primary" : "bg-border"
+                  className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 transition-all duration-300 ${
+                    s.id < step
+                      ? "bg-primary text-primary-foreground shadow-sm shadow-primary/30"
+                      : s.id === step
+                      ? "bg-primary/15 text-primary border-2 border-primary"
+                      : "bg-muted text-muted-foreground border border-border"
                   }`}
-                />
+                >
+                  {s.id < step ? <Check className="w-3.5 h-3.5" /> : s.id}
+                </div>
+                <span
+                  className={`text-[10px] font-medium whitespace-nowrap transition-colors ${
+                    s.id === step ? "text-primary" : "text-muted-foreground"
+                  }`}
+                >
+                  {s.label}
+                </span>
+              </div>
+              {i < STEPS.length - 1 && (
+                <div className={`flex-1 h-px mx-2 mb-5 transition-colors duration-300 ${s.id < step ? "bg-primary/50" : "bg-border"}`} />
               )}
             </div>
           ))}
         </div>
 
-        {/* Step content */}
-        <div className="flex flex-col gap-1">
-          <h1 className="text-2xl font-bold text-foreground">
-            {STEPS[step - 1].title}
-          </h1>
-          <p className="text-muted-foreground text-sm">
-            {STEPS[step - 1].subtitle}
-          </p>
+        {/* ── Step header ───────────────────────────────────────────── */}
+        <div className="flex flex-col gap-1.5">
+          <h1 className="text-2xl font-bold text-foreground">{currentStep.title}</h1>
+          <p className="text-sm text-muted-foreground leading-relaxed">{currentStep.description}</p>
         </div>
 
+        {/* ── Fields ────────────────────────────────────────────────── */}
         <div className="flex flex-col gap-5">
+
           {step === 1 && (
             <>
               <Field
@@ -161,28 +271,37 @@ export default function OnboardingPage() {
                 value={data.startupName}
                 onChange={(v) => set("startupName", v)}
                 placeholder="e.g. CoFound"
+                required
+                hasError={errorFields.has("startupName")}
               />
               <Field
                 label="One-liner"
-                hint="How you'd describe it to a stranger in one sentence"
+                hint="Describe what you do in one sentence — no jargon."
                 value={data.oneLiner}
                 onChange={(v) => set("oneLiner", v)}
                 placeholder="e.g. AI co-founder workspace for early-stage startups"
+                required
+                hasError={errorFields.has("oneLiner")}
               />
               <Field
                 label="The problem"
-                hint="What pain are you solving?"
+                hint="What specific pain are you solving? Who feels it most?"
                 value={data.problem}
                 onChange={(v) => set("problem", v)}
+                placeholder="Founders waste hours on strategy, research, and decision-making with no one to pressure-test their thinking..."
                 multiline
-                placeholder="Founders spend too much time on research, strategy, and execution planning..."
+                required
+                hasError={errorFields.has("problem")}
+                maxLength={400}
               />
               <Field
                 label="Your solution"
+                hint="How do you solve it differently or better than what exists?"
                 value={data.solution}
                 onChange={(v) => set("solution", v)}
+                placeholder="A multi-agent AI platform that acts as an always-on co-founder — each agent has a distinct role..."
                 multiline
-                placeholder="A multi-agent AI platform that acts as an always-on co-founder..."
+                maxLength={400}
               />
             </>
           )}
@@ -191,22 +310,27 @@ export default function OnboardingPage() {
             <>
               <Field
                 label="Target audience"
-                hint="Who buys this?"
+                hint="Who buys or uses this? Be as specific as possible."
                 value={data.targetAudience}
                 onChange={(v) => set("targetAudience", v)}
-                placeholder="e.g. Early-stage B2B SaaS founders, solo founders"
+                placeholder="e.g. Solo technical founders building B2B SaaS"
+                required
+                hasError={errorFields.has("targetAudience")}
               />
               <Field
                 label="Ideal Customer Profile (ICP)"
-                hint="Be specific — role, company size, situation"
+                hint="Role, company size, tech stack, triggers — the more specific, the better the advice."
                 value={data.icp}
                 onChange={(v) => set("icp", v)}
+                placeholder="Solo founder, technical background, pre-seed, building B2B SaaS, no co-founder, wants investor-level advice..."
                 multiline
-                placeholder="Solo technical founders, pre-seed, building B2B SaaS, limited time for strategy..."
+                required
+                hasError={errorFields.has("icp")}
+                maxLength={400}
               />
               <Field
                 label="Market size"
-                hint="TAM / SAM estimate (rough is fine)"
+                hint="Rough TAM/SAM estimate. Directionally right is fine."
                 value={data.marketSize}
                 onChange={(v) => set("marketSize", v)}
                 placeholder="e.g. ~5M founders globally, $50B productivity market"
@@ -216,32 +340,36 @@ export default function OnboardingPage() {
 
           {step === 3 && (
             <>
-              <div className="flex flex-col gap-1.5">
-                <label className="text-sm font-medium text-foreground">
-                  Funding stage
-                </label>
-                <div className="flex flex-wrap gap-2">
+              {/* Stage selector */}
+              <div className="flex flex-col gap-2">
+                <div className="flex items-center gap-1.5">
+                  <label className="text-sm font-semibold text-foreground">Funding stage</label>
+                  <span className="text-primary text-xs">*</span>
+                </div>
+                <div className="grid grid-cols-5 gap-2">
                   {STAGES.map((s) => (
                     <button
                       key={s.value}
                       onClick={() => set("fundingStage", s.value)}
-                      className={`rounded-lg px-4 py-2 text-sm font-medium border transition-colors ${
+                      className={`flex flex-col items-center gap-1 rounded-xl px-2 py-2.5 text-center border transition-all duration-200 ${
                         data.fundingStage === s.value
-                          ? "bg-primary/20 border-primary text-primary"
-                          : "bg-card border-border text-muted-foreground hover:text-foreground"
+                          ? "bg-primary/10 border-primary/40 text-primary shadow-sm shadow-primary/10"
+                          : "bg-card border-border text-muted-foreground hover:text-foreground hover:border-border/80"
                       }`}
                     >
-                      {s.label}
+                      <span className="text-xs font-bold">{s.label}</span>
+                      <span className="text-[9px] opacity-60 leading-tight">{s.description}</span>
                     </button>
                   ))}
                 </div>
               </div>
+
               <Field
                 label="Current MRR"
-                hint="Monthly recurring revenue (leave blank if pre-revenue)"
+                hint="Monthly recurring revenue. Blank = pre-revenue."
                 value={data.currentMrr}
                 onChange={(v) => set("currentMrr", v)}
-                placeholder="e.g. $0, $2,000, $15K"
+                placeholder="e.g. $0, $2,400/mo, $15K"
               />
               <Field
                 label="User / customer count"
@@ -250,11 +378,13 @@ export default function OnboardingPage() {
                 placeholder="e.g. 0, 50 beta users, 200 paying customers"
               />
               <Field
-                label="Your most important metric right now"
-                hint="The one number you track obsessively"
+                label="Your most important metric"
+                hint="The single number you obsessively track right now."
                 value={data.topMetric}
                 onChange={(v) => set("topMetric", v)}
-                placeholder="e.g. Weekly signups, Demo conversion rate, NPS"
+                placeholder="e.g. Weekly signups, Demo-to-close rate, Day-30 retention"
+                required
+                hasError={errorFields.has("topMetric")}
               />
             </>
           )}
@@ -262,36 +392,53 @@ export default function OnboardingPage() {
           {step === 4 && (
             <>
               <Field
-                label="GTM goal (next 90 days)"
-                hint="What does success look like in 3 months?"
+                label="GTM goal — next 90 days"
+                hint="What does success look like in 3 months? One clear outcome."
                 value={data.gtmGoal}
                 onChange={(v) => set("gtmGoal", v)}
+                placeholder="Get to 50 paying customers, close first enterprise deal, hit $10K MRR..."
                 multiline
-                placeholder="Get to 50 paying customers, launch on Product Hunt, close first enterprise deal..."
+                required
+                hasError={errorFields.has("gtmGoal")}
+                maxLength={300}
               />
               <Field
                 label="Biggest challenge right now"
-                hint="What's the one thing keeping you up at night?"
+                hint="What's the one thing keeping you up at night? Don't sugarcoat it."
                 value={data.biggestChallenge}
                 onChange={(v) => set("biggestChallenge", v)}
+                placeholder="Can't find a scalable acquisition channel. Activation rate is 20% and I don't know why..."
                 multiline
-                placeholder="Finding the right distribution channel, improving activation rate..."
+                required
+                hasError={errorFields.has("biggestChallenge")}
+                maxLength={300}
               />
               <Field
                 label="Next milestone"
+                hint="The single most important thing to hit in the next 4–6 weeks."
                 value={data.nextMilestone}
                 onChange={(v) => set("nextMilestone", v)}
-                placeholder="e.g. $10K MRR, 100 users, seed round close"
+                placeholder="e.g. 10 paid pilots, seed round close, ship v2 with retention feature"
               />
             </>
           )}
         </div>
 
-        {/* Navigation */}
+        {/* ── Required fields note ──────────────────────────────────── */}
+        {errorFields.size > 0 && (
+          <div className="flex items-center gap-2 rounded-xl border border-destructive/30 bg-destructive/5 px-4 py-3">
+            <AlertCircle className="w-4 h-4 text-destructive flex-shrink-0" />
+            <p className="text-xs text-destructive">
+              Please fill in the required fields above before continuing.
+            </p>
+          </div>
+        )}
+
+        {/* ── Navigation ────────────────────────────────────────────── */}
         <div className="flex items-center justify-between">
           {step > 1 ? (
             <button
-              onClick={() => setStep((s) => s - 1)}
+              onClick={handleBack}
               className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -303,24 +450,28 @@ export default function OnboardingPage() {
 
           {step < STEPS.length ? (
             <button
-              onClick={() => setStep((s) => s + 1)}
-              disabled={!canAdvance()}
-              className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
+              onClick={handleNext}
+              className="flex items-center gap-2 rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm shadow-primary/20"
             >
-              Next
+              Next step
               <ArrowRight className="w-4 h-4" />
             </button>
           ) : (
             <button
               onClick={handleFinish}
-              disabled={!canAdvance()}
-              className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-40 transition-colors"
+              className="flex items-center gap-2 rounded-xl bg-primary px-6 py-2.5 text-sm font-semibold text-primary-foreground hover:bg-primary/90 transition-colors shadow-sm shadow-primary/20"
             >
-              Launch my council
+              {isEditing ? "Update my council" : "Launch my council"}
               <ArrowRight className="w-4 h-4" />
             </button>
           )}
         </div>
+
+        {/* Step indicator */}
+        <p className="text-center text-xs text-muted-foreground">
+          Step {step} of {STEPS.length} · Fields marked{" "}
+          <span className="text-primary font-semibold">*</span> are required
+        </p>
       </div>
     </div>
   );
