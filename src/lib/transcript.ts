@@ -2,7 +2,8 @@
  * Council transcript — persists rounds to localStorage per startup.
  */
 
-import { AgentId } from "./agents";
+import { AgentId, AGENTS } from "./agents";
+import { CompanyBrain } from "./brain";
 
 export interface RoundResponse {
   text: string;
@@ -14,6 +15,8 @@ export interface Round {
   id: string;
   question: string;
   timestamp: number;
+  /** When set, this round was a directed follow-up to a specific agent */
+  directedTo?: AgentId;
   responses: Partial<Record<AgentId, RoundResponse>>;
 }
 
@@ -81,4 +84,79 @@ export function buildAgentHistory(
     }
   }
   return history;
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+
+/** Render a transcript as a Markdown string. */
+export function exportTranscriptAsMarkdown(
+  brain: CompanyBrain,
+  rounds: Round[]
+): string {
+  const lines: string[] = [];
+
+  lines.push(`# ${brain.startupName} — CoFound Council Transcript`);
+  lines.push(`> ${brain.oneLiner}`);
+  lines.push(
+    `> Stage: **${brain.fundingStage}** · Generated: ${new Date().toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+    })}`
+  );
+  lines.push("");
+  lines.push("---");
+  lines.push("");
+
+  for (let i = 0; i < rounds.length; i++) {
+    const round = rounds[i];
+    const directedAgent = round.directedTo
+      ? AGENTS.find((a) => a.id === round.directedTo)
+      : null;
+
+    lines.push(
+      `## Round ${i + 1}${directedAgent ? ` · Follow-up → ${directedAgent.name}` : ""}`
+    );
+    lines.push(`**Question:** ${round.question}`);
+    lines.push(
+      `*${new Date(round.timestamp).toLocaleString("en-US", {
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      })}*`
+    );
+    lines.push("");
+
+    for (const [agentId, response] of Object.entries(round.responses)) {
+      if (!response?.text) continue;
+      const agent = AGENTS.find((a) => a.id === agentId);
+      if (!agent) continue;
+      lines.push(`### ${agent.emoji} ${agent.name}`);
+      lines.push(`> *${agent.tagline}*`);
+      lines.push("");
+      lines.push(response.text);
+      lines.push("");
+    }
+
+    lines.push("---");
+    lines.push("");
+  }
+
+  return lines.join("\n");
+}
+
+/** Trigger a browser download of the transcript as a .md file. */
+export function downloadTranscript(brain: CompanyBrain, rounds: Round[]): void {
+  const content = exportTranscriptAsMarkdown(brain, rounds);
+  const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${brain.startupName.toLowerCase().replace(/\s+/g, "-")}-council-${
+    new Date().toISOString().slice(0, 10)
+  }.md`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
