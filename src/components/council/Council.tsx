@@ -23,6 +23,8 @@ import {
   Download,
   MessageSquare,
   Loader2,
+  AlertTriangle,
+  X,
 } from "lucide-react";
 
 const DEFAULT_QUESTIONS = [
@@ -46,6 +48,7 @@ export function Council({ brain, companyId }: CouncilProps) {
   );
   const [loading, setLoading] = useState(false);
   const [loadingRounds, setLoadingRounds] = useState(true);
+  const [confirmingDeeper, setConfirmingDeeper] = useState<string | null>(null);
 
   const agentHistoryRef = useRef<Partial<Record<AgentId, ConversationTurn[]>>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -166,12 +169,17 @@ export function Council({ brain, companyId }: CouncilProps) {
   ): Promise<string> {
     let fullText = "";
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 90_000);
+
     try {
       const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
+        signal: controller.signal,
       });
+      clearTimeout(timeoutId);
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
@@ -227,6 +235,8 @@ export function Council({ brain, companyId }: CouncilProps) {
         )
       );
     } catch (err) {
+      clearTimeout(timeoutId);
+      const isTimeout = err instanceof Error && err.name === "AbortError";
       setRounds((prev) =>
         prev.map((r) =>
           r.id === roundId
@@ -237,7 +247,7 @@ export function Council({ brain, companyId }: CouncilProps) {
                   [agentId]: {
                     text: "",
                     loading: false,
-                    error: err instanceof Error ? err.message : "Failed",
+                    error: isTimeout ? "Request timed out — try again." : (err instanceof Error ? err.message : "Failed"),
                   },
                 },
               }
@@ -386,6 +396,24 @@ export function Council({ brain, companyId }: CouncilProps) {
     [loading, brain, companyId]
   );
 
+  // ── Wave 1-only synthesis ──────────────────────────────────────────────────
+  const synthesizeWave1Only = useCallback(
+    async (roundId: string) => {
+      if (loading) return;
+      const round = rounds.find((r) => r.id === roundId);
+      if (!round || round.synthesis || round.synthesisLoading) return;
+
+      const wave1Responses: Partial<Record<AgentId, string>> = {};
+      for (const [id, resp] of Object.entries(round.responses)) {
+        if (resp?.text) wave1Responses[id as AgentId] = resp.text;
+      }
+      setLoading(true);
+      await runSynthesis(roundId, round.question, wave1Responses, {});
+      setLoading(false);
+    },
+    [loading, rounds, brain] // eslint-disable-line react-hooks/exhaustive-deps
+  );
+
   // ── Wave 2 — debate ────────────────────────────────────────────────────────
   const goDeeper = useCallback(
     async (roundId: string) => {
@@ -394,6 +422,7 @@ export function Council({ brain, companyId }: CouncilProps) {
       const round = rounds.find((r) => r.id === roundId);
       if (!round || round.debateTriggered) return;
 
+      setConfirmingDeeper(null);
       setLoading(true);
 
       const allWave1Responses: Partial<Record<AgentId, string>> = {};
@@ -645,7 +674,11 @@ export function Council({ brain, companyId }: CouncilProps) {
                     id={`round-${round.id}`}
                     councilLoading={loading}
                     onFollowUp={(agentId, question) => askOneAgent(agentId, question)}
-                    onGoDeeper={() => goDeeper(round.id)}
+                    onGoDeeper={() => setConfirmingDeeper(round.id)}
+                    onSynthesizeNow={() => synthesizeWave1Only(round.id)}
+                    isConfirmingDeeper={confirmingDeeper === round.id}
+                    onCancelDeeper={() => setConfirmingDeeper(null)}
+                    onConfirmDeeper={() => goDeeper(round.id)}
                   />
                 ))}
                 <div ref={bottomRef} className="h-2" />
@@ -669,6 +702,10 @@ function RoundBlock({
   councilLoading,
   onFollowUp,
   onGoDeeper,
+  onSynthesizeNow,
+  isConfirmingDeeper,
+  onCancelDeeper,
+  onConfirmDeeper,
 }: {
   round: Round;
   roundNumber: number;
@@ -676,6 +713,10 @@ function RoundBlock({
   councilLoading: boolean;
   onFollowUp: (agentId: AgentId, question: string) => void;
   onGoDeeper: () => void;
+  onSynthesizeNow: () => void;
+  isConfirmingDeeper: boolean;
+  onCancelDeeper: () => void;
+  onConfirmDeeper: () => void;
 }) {
   const wave1Entries = Object.entries(round.responses) as [AgentId, RoundResponse][];
   const wave2Entries = Object.entries(round.debateResponses) as [AgentId, RoundResponse][];
@@ -691,6 +732,13 @@ function RoundBlock({
     allWave1Done &&
     !round.directedTo &&
     !round.debateTriggered &&
+    !councilLoading;
+
+  const canSynthesizeNow =
+    allWave1Done &&
+    !round.directedTo &&
+    !round.synthesis &&
+    !round.synthesisLoading &&
     !councilLoading;
 
   return (
@@ -749,17 +797,62 @@ function RoundBlock({
         </div>
       )}
 
-      {/* Go Deeper button */}
-      {canGoDeeper && (
-        <div className="flex justify-center pt-1">
-          <button
-            onClick={onGoDeeper}
-            className="group flex items-center gap-2.5 rounded-xl border border-primary/25 bg-primary/5 hover:bg-primary/10 hover:border-primary/40 px-5 py-2.5 text-sm font-medium text-primary transition-all duration-200"
-          >
-            <MessageSquare className="w-4 h-4" />
-            Go Deeper — Start the Debate
-            <span className="text-[10px] text-primary/60 font-normal">Wave 2</span>
-          </button>
+      {/* Action buttons: Synthesize Wave 1 / Go Deeper */}
+      {(canGoDeeper || canSynthesizeNow) && !isConfirmingDeeper && (
+        <div className="flex items-center justify-center gap-3 pt-1 flex-wrap">
+          {canSynthesizeNow && (
+            <button
+              onClick={onSynthesizeNow}
+              className="group flex items-center gap-2 rounded-xl border border-primary/25 bg-primary/5 hover:bg-primary/10 hover:border-primary/40 px-4 py-2.5 text-sm font-medium text-primary transition-all duration-200"
+            >
+              <Sparkles className="w-4 h-4" />
+              Synthesize Wave 1
+              <span className="text-[10px] text-primary/60 font-normal">1 call</span>
+            </button>
+          )}
+          {canGoDeeper && (
+            <button
+              onClick={onGoDeeper}
+              className="group flex items-center gap-2.5 rounded-xl border border-orange-400/30 bg-orange-400/5 hover:bg-orange-400/10 hover:border-orange-400/50 px-5 py-2.5 text-sm font-medium text-orange-400 transition-all duration-200"
+            >
+              <MessageSquare className="w-4 h-4" />
+              Go Deeper — Start the Debate
+              <span className="text-[10px] text-orange-400/60 font-normal">Wave 2</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Cost confirmation for Go Deeper */}
+      {isConfirmingDeeper && (
+        <div className="rounded-xl border border-orange-400/30 bg-orange-400/[0.05] p-4 flex flex-col gap-3">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-4 h-4 text-orange-400 flex-shrink-0 mt-0.5" />
+            <div className="flex flex-col gap-1">
+              <p className="text-sm font-semibold text-foreground">Start the Debate?</p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Wave 2 runs 6 Opus calls in parallel — each advisor reads all Wave 1 responses and reacts. This is the most expensive step (~6x the cost of Wave 1). After Wave 2, synthesis runs automatically.
+              </p>
+            </div>
+            <button onClick={onCancelDeeper} className="text-muted-foreground hover:text-foreground transition-colors flex-shrink-0">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="flex items-center gap-2 justify-end">
+            <button
+              onClick={onCancelDeeper}
+              className="px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors rounded-lg hover:bg-accent/30"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={onConfirmDeeper}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-orange-400/15 hover:bg-orange-400/25 border border-orange-400/30 text-orange-400 text-xs font-semibold transition-all"
+            >
+              <MessageSquare className="w-3 h-3" />
+              Start Debate
+            </button>
+          </div>
         </div>
       )}
 
