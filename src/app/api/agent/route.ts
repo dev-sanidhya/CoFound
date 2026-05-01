@@ -4,39 +4,12 @@ import { getAgent, AgentId } from "@/lib/agents";
 import { CompanyBrain } from "@/lib/brain";
 import { getSession } from "@/lib/session";
 import { getSupabase, getUserId } from "@/lib/supabase";
+import { isRateLimited } from "@/lib/rateLimit";
 import { ConversationTurn } from "@/lib/transcript";
 
 export const runtime = "nodejs";
 
-const rateMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 30;
-const RATE_WINDOW = 60 * 1000;
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
-    return false;
-  }
-  if (entry.count >= RATE_LIMIT) return true;
-  entry.count++;
-  return false;
-}
-
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown";
-
-  if (isRateLimited(ip)) {
-    return new Response(
-      JSON.stringify({ error: "Too many requests — slow down a bit." }),
-      { status: 429, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
   const session = await getSession();
   const oauthToken = session?.accessToken ?? null;
   const devApiKey = process.env.ANTHROPIC_API_KEY ?? null;
@@ -44,6 +17,17 @@ export async function POST(req: NextRequest) {
     return new Response(JSON.stringify({ error: "Not authenticated" }), {
       status: 401,
     });
+  }
+
+  const identifier = oauthToken
+    ? getUserId(oauthToken)
+    : (req.headers.get("x-forwarded-for")?.split(",")[0].trim() ?? "dev");
+
+  if (await isRateLimited(identifier)) {
+    return new Response(
+      JSON.stringify({ error: "Too many requests — slow down a bit." }),
+      { status: 429, headers: { "Content-Type": "application/json" } }
+    );
   }
 
   const body = (await req.json()) as {
@@ -75,10 +59,8 @@ export async function POST(req: NextRequest) {
   ];
 
   const stream = await client.messages.stream({
-    model: "claude-opus-4-5",
+    model: "claude-sonnet-4-6",
     max_tokens: 1024,
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    thinking: { type: "adaptive" } as any,
     system: agent.systemPrompt(brain),
     messages,
   });

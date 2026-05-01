@@ -82,3 +82,19 @@ CREATE INDEX IF NOT EXISTS artifacts_round_id_idx   ON artifacts(round_id);
 -- ── Context notes column on companies ────────────────────────────────────────
 -- (added via migration; included here for fresh installs)
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS context_notes TEXT NOT NULL DEFAULT '';
+
+-- ── Rate limits (per-user request counting, replaces in-memory map) ──────────
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  identifier TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS rate_limits_identifier_created_idx ON rate_limits (identifier, created_at);
+
+-- Auto-purge rows older than 10 minutes to keep the table lean.
+-- Run this once in the SQL editor, then let pg_cron handle it, or just
+-- let old rows accumulate (the query only looks at the last 60 seconds).
+-- Optional cron: SELECT cron.schedule('purge-rate-limits', '*/10 * * * *',
+--   $$ DELETE FROM rate_limits WHERE created_at < NOW() - INTERVAL '10 minutes' $$);
