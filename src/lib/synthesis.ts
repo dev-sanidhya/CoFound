@@ -12,10 +12,12 @@ export function buildSynthesisPrompt(
       .map((a) => `### ${a.emoji} ${a.name}\n${responses[a.id]}`)
       .join("\n\n");
 
+  const hasDebate = Object.values(debateResponses).some(Boolean);
+
   return `
 You are the Synthesis Engine for ${brain.startupName}'s advisory council.
 
-The council just ran a two-wave deliberation on this question:
+The council just ran a deliberation on this question:
 "${question}"
 
 ${formatBrainForPrompt(brain)}
@@ -27,13 +29,11 @@ ${formatBrainForPrompt(brain)}
 ${formatWave(wave1)}
 
 ---
-
-## WAVE 2 — The Debate
-
-${formatWave(debateResponses)}
-
----
-
+${
+  hasDebate
+    ? `\n## WAVE 2 — The Debate\n\n${formatWave(debateResponses)}\n\n---\n`
+    : ""
+}
 Now synthesize. Your output must follow this exact structure:
 
 **CONSENSUS**
