@@ -1,7 +1,3 @@
-/**
- * Council transcript — persists rounds to localStorage per startup.
- */
-
 import { AgentId, AGENTS } from "./agents";
 import { CompanyBrain } from "./brain";
 
@@ -15,13 +11,21 @@ export interface Round {
   id: string;
   question: string;
   timestamp: number;
-  /** When set, this round was a directed follow-up to a specific agent */
   directedTo?: AgentId;
-  responses: Partial<Record<AgentId, RoundResponse>>;
-}
 
-export interface Transcript {
-  rounds: Round[];
+  // Wave 1 — independent parallel responses
+  responses: Partial<Record<AgentId, RoundResponse>>;
+  wave1Complete: boolean;
+
+  // Wave 2 — debate (each agent reacts to all Wave 1 outputs)
+  debateTriggered: boolean;
+  debateResponses: Partial<Record<AgentId, RoundResponse>>;
+  debateComplete: boolean;
+
+  // Synthesis — unified council recommendation
+  synthesis?: string;
+  synthesisLoading?: boolean;
+  synthesisComplete?: boolean;
 }
 
 export interface ConversationTurn {
@@ -29,45 +33,56 @@ export interface ConversationTurn {
   content: string;
 }
 
-function storageKey(startupName: string): string {
-  return `cofound_transcript_${startupName.toLowerCase().replace(/\s+/g, "_")}`;
+// ── Reconstruction from DB rows ───────────────────────────────────────────────
+
+export interface DBRound {
+  id: string;
+  question: string;
+  directed_to: string | null;
+  wave1_complete: boolean;
+  debate_triggered: boolean;
+  debate_complete: boolean;
+  synthesis_text: string | null;
+  synthesis_complete: boolean;
+  created_at: string;
+  responses: {
+    agent_id: string;
+    wave: number;
+    content: string;
+    is_complete: boolean;
+  }[];
 }
 
-/** Save only completed (non-loading) responses to localStorage. */
-export function saveTranscript(startupName: string, transcript: Transcript): void {
-  if (typeof window === "undefined") return;
-  const clean: Transcript = {
-    rounds: transcript.rounds
-      .map((r) => ({
-        ...r,
-        responses: Object.fromEntries(
-          Object.entries(r.responses).filter(
-            ([, v]) => v && !v.loading && v.text
-          )
-        ) as Partial<Record<AgentId, RoundResponse>>,
-      }))
-      .filter((r) => Object.keys(r.responses).length > 0),
-  };
-  localStorage.setItem(storageKey(startupName), JSON.stringify(clean));
-}
+export function reconstructRound(r: DBRound): Round {
+  const wave1: Partial<Record<AgentId, RoundResponse>> = {};
+  const debate: Partial<Record<AgentId, RoundResponse>> = {};
 
-export function loadTranscript(startupName: string): Transcript {
-  if (typeof window === "undefined") return { rounds: [] };
-  const raw = localStorage.getItem(storageKey(startupName));
-  if (!raw) return { rounds: [] };
-  try {
-    return JSON.parse(raw) as Transcript;
-  } catch {
-    return { rounds: [] };
+  for (const resp of r.responses ?? []) {
+    const entry: RoundResponse = {
+      text: resp.content,
+      loading: !resp.is_complete,
+    };
+    if (resp.wave === 1) wave1[resp.agent_id as AgentId] = entry;
+    else if (resp.wave === 2) debate[resp.agent_id as AgentId] = entry;
   }
+
+  return {
+    id: r.id,
+    question: r.question,
+    timestamp: new Date(r.created_at).getTime(),
+    directedTo: (r.directed_to as AgentId) ?? undefined,
+    responses: wave1,
+    wave1Complete: r.wave1_complete,
+    debateTriggered: r.debate_triggered,
+    debateResponses: debate,
+    debateComplete: r.debate_complete,
+    synthesis: r.synthesis_text ?? undefined,
+    synthesisComplete: r.synthesis_complete,
+  };
 }
 
-export function clearTranscript(startupName: string): void {
-  if (typeof window === "undefined") return;
-  localStorage.removeItem(storageKey(startupName));
-}
+// ── Agent history ─────────────────────────────────────────────────────────────
 
-/** Rebuild per-agent conversation history from a saved transcript. */
 export function buildAgentHistory(
   rounds: Round[]
 ): Partial<Record<AgentId, ConversationTurn[]>> {
@@ -88,7 +103,6 @@ export function buildAgentHistory(
 
 // ── Export ────────────────────────────────────────────────────────────────────
 
-/** Render a transcript as a Markdown string. */
 export function exportTranscriptAsMarkdown(
   brain: CompanyBrain,
   rounds: Round[]
@@ -127,14 +141,39 @@ export function exportTranscriptAsMarkdown(
     );
     lines.push("");
 
-    for (const [agentId, response] of Object.entries(round.responses)) {
-      if (!response?.text) continue;
-      const agent = AGENTS.find((a) => a.id === agentId);
-      if (!agent) continue;
-      lines.push(`### ${agent.emoji} ${agent.name}`);
-      lines.push(`> *${agent.tagline}*`);
+    if (Object.keys(round.responses).length > 0) {
+      lines.push("### Wave 1 — Independent Analysis");
       lines.push("");
-      lines.push(response.text);
+      for (const [agentId, response] of Object.entries(round.responses)) {
+        if (!response?.text) continue;
+        const agent = AGENTS.find((a) => a.id === agentId);
+        if (!agent) continue;
+        lines.push(`#### ${agent.emoji} ${agent.name}`);
+        lines.push(`> *${agent.tagline}*`);
+        lines.push("");
+        lines.push(response.text);
+        lines.push("");
+      }
+    }
+
+    if (round.debateTriggered && Object.keys(round.debateResponses).length > 0) {
+      lines.push("### Wave 2 — The Debate");
+      lines.push("");
+      for (const [agentId, response] of Object.entries(round.debateResponses)) {
+        if (!response?.text) continue;
+        const agent = AGENTS.find((a) => a.id === agentId);
+        if (!agent) continue;
+        lines.push(`#### ${agent.emoji} ${agent.name} (debate)`);
+        lines.push("");
+        lines.push(response.text);
+        lines.push("");
+      }
+    }
+
+    if (round.synthesis) {
+      lines.push("### Council Synthesis");
+      lines.push("");
+      lines.push(round.synthesis);
       lines.push("");
     }
 
@@ -145,7 +184,6 @@ export function exportTranscriptAsMarkdown(
   return lines.join("\n");
 }
 
-/** Trigger a browser download of the transcript as a .md file. */
 export function downloadTranscript(brain: CompanyBrain, rounds: Round[]): void {
   const content = exportTranscriptAsMarkdown(brain, rounds);
   const blob = new Blob([content], { type: "text/markdown;charset=utf-8" });
