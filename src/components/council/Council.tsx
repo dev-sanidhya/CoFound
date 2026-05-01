@@ -7,8 +7,6 @@ import {
   Round,
   RoundResponse,
   ConversationTurn,
-  saveTranscript,
-  loadTranscript,
   buildAgentHistory,
   downloadTranscript,
 } from "@/lib/transcript";
@@ -17,7 +15,13 @@ import { AgentResponse } from "./AgentResponse";
 import { QuestionBar } from "./QuestionBar";
 import { BrainBanner } from "./BrainBanner";
 import { v4 as uuidv4 } from "uuid";
-import { Sparkles, Trash2, Download } from "lucide-react";
+import {
+  Sparkles,
+  Trash2,
+  Download,
+  MessageSquare,
+  Loader2,
+} from "lucide-react";
 
 const DEFAULT_QUESTIONS = [
   "What are the biggest risks in my market right now?",
@@ -27,23 +31,39 @@ const DEFAULT_QUESTIONS = [
   "How would you stress-test my ICP?",
 ];
 
-export function Council({ brain }: { brain: CompanyBrain }) {
+interface CouncilProps {
+  brain: CompanyBrain;
+  companyId: string;
+}
+
+export function Council({ brain, companyId }: CouncilProps) {
   const [rounds, setRounds] = useState<Round[]>([]);
   const [activeAgents, setActiveAgents] = useState<Set<AgentId>>(
     new Set(AGENTS.map((a) => a.id))
   );
   const [loading, setLoading] = useState(false);
+  const [loadingRounds, setLoadingRounds] = useState(true);
 
   const agentHistoryRef = useRef<Partial<Record<AgentId, ConversationTurn[]>>>({});
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Load persisted rounds on mount
   useEffect(() => {
-    const saved = loadTranscript(brain.startupName);
-    if (saved.rounds.length > 0) {
-      setRounds(saved.rounds);
-      agentHistoryRef.current = buildAgentHistory(saved.rounds);
+    async function loadRounds() {
+      try {
+        const res = await fetch(`/api/rounds?companyId=${companyId}`);
+        if (!res.ok) return;
+        const { rounds: dbRounds } = await res.json();
+        if (dbRounds.length > 0) {
+          setRounds(dbRounds);
+          agentHistoryRef.current = buildAgentHistory(dbRounds);
+        }
+      } finally {
+        setLoadingRounds(false);
+      }
     }
-  }, [brain.startupName]);
+    loadRounds();
+  }, [companyId]);
 
   useEffect(() => {
     if (rounds.length > 0) {
@@ -63,87 +83,26 @@ export function Council({ brain }: { brain: CompanyBrain }) {
     });
   }, []);
 
-  const clearHistory = useCallback(() => {
+  const clearHistory = useCallback(async () => {
     setRounds([]);
     agentHistoryRef.current = {};
-    saveTranscript(brain.startupName, { rounds: [] });
-  }, [brain.startupName]);
+  }, []);
 
-  // ── Ask all active agents ────────────────────────────────────────────────
-  const askCouncil = useCallback(
-    async (question: string) => {
-      if (loading) return;
-      setLoading(true);
-
-      const active = AGENTS.filter((a) => activeAgents.has(a.id));
-      const roundId = uuidv4();
-
-      const newRound: Round = {
-        id: roundId,
-        question,
-        timestamp: Date.now(),
-        responses: Object.fromEntries(
-          active.map((a) => [a.id, { text: "", loading: true }])
-        ) as Partial<Record<AgentId, RoundResponse>>,
-      };
-
-      setRounds((prev) => [...prev, newRound]);
-      await Promise.all(
-        active.map((agent) =>
-          streamAgent(agent, brain, question, agentHistoryRef.current[agent.id] ?? [], roundId)
-        )
-      );
-      setLoading(false);
-    },
-    [loading, activeAgents, brain]
-  );
-
-  // ── Ask a single specific agent (follow-up) ──────────────────────────────
-  const askOneAgent = useCallback(
-    async (agentId: AgentId, question: string) => {
-      if (loading) return;
-      setLoading(true);
-
-      const agent = AGENTS.find((a) => a.id === agentId)!;
-      const roundId = uuidv4();
-
-      const newRound: Round = {
-        id: roundId,
-        question,
-        timestamp: Date.now(),
-        directedTo: agentId,
-        responses: {
-          [agentId]: { text: "", loading: true },
-        } as Partial<Record<AgentId, RoundResponse>>,
-      };
-
-      setRounds((prev) => [...prev, newRound]);
-      await streamAgent(agent, brain, question, agentHistoryRef.current[agentId] ?? [], roundId);
-      setLoading(false);
-    },
-    [loading, brain]
-  );
-
-  // ── SSE stream helper ────────────────────────────────────────────────────
-  async function streamAgent(
-    agent: AgentDef,
-    brain: CompanyBrain,
-    question: string,
-    history: ConversationTurn[],
-    roundId: string
-  ) {
+  // ── SSE stream helper ──────────────────────────────────────────────────────
+  async function streamFromEndpoint(
+    endpoint: string,
+    body: Record<string, unknown>,
+    roundId: string,
+    agentId: AgentId,
+    responseField: "responses" | "debateResponses"
+  ): Promise<string> {
     let fullText = "";
 
     try {
-      const res = await fetch("/api/agent", {
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          agentId: agent.id,
-          brain,
-          question,
-          history: history.slice(-6),
-        }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
@@ -172,49 +131,350 @@ export function Council({ brain }: { brain: CompanyBrain }) {
             setRounds((prev) =>
               prev.map((r) =>
                 r.id === roundId
-                  ? { ...r, responses: { ...r.responses, [agent.id]: { text: fullText, loading: true } } }
+                  ? {
+                      ...r,
+                      [responseField]: {
+                        ...r[responseField],
+                        [agentId]: { text: fullText, loading: true },
+                      },
+                    }
                   : r
               )
             );
-          } catch { /* skip */ }
+          } catch { /* skip malformed chunk */ }
         }
       }
 
-      // Mark done + persist
-      setRounds((prev) => {
-        const updated = prev.map((r) =>
+      setRounds((prev) =>
+        prev.map((r) =>
           r.id === roundId
-            ? { ...r, responses: { ...r.responses, [agent.id]: { text: fullText, loading: false } } }
+            ? {
+                ...r,
+                [responseField]: {
+                  ...r[responseField],
+                  [agentId]: { text: fullText, loading: false },
+                },
+              }
             : r
-        );
-        saveTranscript(brain.startupName, { rounds: updated });
-        return updated;
-      });
-
-      // Update agent memory
-      if (fullText) {
-        const prev = agentHistoryRef.current[agent.id] ?? [];
-        agentHistoryRef.current[agent.id] = [
-          ...prev,
-          { role: "user", content: question },
-          { role: "assistant", content: fullText },
-        ];
-      }
+        )
+      );
     } catch (err) {
       setRounds((prev) =>
         prev.map((r) =>
           r.id === roundId
             ? {
                 ...r,
-                responses: {
-                  ...r.responses,
-                  [agent.id]: { text: "", loading: false, error: err instanceof Error ? err.message : "Failed" },
+                [responseField]: {
+                  ...r[responseField],
+                  [agentId]: {
+                    text: "",
+                    loading: false,
+                    error: err instanceof Error ? err.message : "Failed",
+                  },
                 },
               }
             : r
         )
       );
     }
+
+    return fullText;
+  }
+
+  // ── Wave 1 — ask all active agents ────────────────────────────────────────
+  const askCouncil = useCallback(
+    async (question: string) => {
+      if (loading) return;
+      setLoading(true);
+
+      const active = AGENTS.filter((a) => activeAgents.has(a.id));
+      const roundId = uuidv4();
+
+      const newRound: Round = {
+        id: roundId,
+        question,
+        timestamp: Date.now(),
+        responses: Object.fromEntries(
+          active.map((a) => [a.id, { text: "", loading: true }])
+        ) as Partial<Record<AgentId, RoundResponse>>,
+        wave1Complete: false,
+        debateTriggered: false,
+        debateResponses: {},
+        debateComplete: false,
+      };
+
+      setRounds((prev) => [...prev, newRound]);
+
+      // Persist round to DB
+      await fetch("/api/rounds", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roundId, companyId, question }),
+      });
+
+      // Stream all active agents in parallel
+      const results = await Promise.all(
+        active.map(async (agent) => {
+          const text = await streamFromEndpoint(
+            "/api/agent",
+            {
+              agentId: agent.id,
+              brain,
+              question,
+              history: (agentHistoryRef.current[agent.id] ?? []).slice(-6),
+              roundId,
+            },
+            roundId,
+            agent.id,
+            "responses"
+          );
+          return { agentId: agent.id, text };
+        })
+      );
+
+      // Update agent history
+      for (const { agentId, text } of results) {
+        if (text) {
+          const prev = agentHistoryRef.current[agentId] ?? [];
+          agentHistoryRef.current[agentId] = [
+            ...prev,
+            { role: "user", content: question },
+            { role: "assistant", content: text },
+          ];
+        }
+      }
+
+      // Mark Wave 1 complete
+      setRounds((prev) =>
+        prev.map((r) => (r.id === roundId ? { ...r, wave1Complete: true } : r))
+      );
+      await fetch("/api/rounds", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roundId, wave1_complete: true }),
+      });
+
+      setLoading(false);
+    },
+    [loading, activeAgents, brain, companyId]
+  );
+
+  // ── Follow-up — ask a single agent ────────────────────────────────────────
+  const askOneAgent = useCallback(
+    async (agentId: AgentId, question: string) => {
+      if (loading) return;
+      setLoading(true);
+
+      const roundId = uuidv4();
+      const newRound: Round = {
+        id: roundId,
+        question,
+        timestamp: Date.now(),
+        directedTo: agentId,
+        responses: { [agentId]: { text: "", loading: true } } as Partial<Record<AgentId, RoundResponse>>,
+        wave1Complete: false,
+        debateTriggered: false,
+        debateResponses: {},
+        debateComplete: false,
+      };
+
+      setRounds((prev) => [...prev, newRound]);
+
+      await fetch("/api/rounds", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roundId, companyId, question, directedTo: agentId }),
+      });
+
+      const text = await streamFromEndpoint(
+        "/api/agent",
+        {
+          agentId,
+          brain,
+          question,
+          history: (agentHistoryRef.current[agentId] ?? []).slice(-6),
+          roundId,
+        },
+        roundId,
+        agentId,
+        "responses"
+      );
+
+      if (text) {
+        const prev = agentHistoryRef.current[agentId] ?? [];
+        agentHistoryRef.current[agentId] = [
+          ...prev,
+          { role: "user", content: question },
+          { role: "assistant", content: text },
+        ];
+      }
+
+      setRounds((prev) =>
+        prev.map((r) => (r.id === roundId ? { ...r, wave1Complete: true } : r))
+      );
+
+      setLoading(false);
+    },
+    [loading, brain, companyId]
+  );
+
+  // ── Wave 2 — debate ────────────────────────────────────────────────────────
+  const goDeeper = useCallback(
+    async (roundId: string) => {
+      if (loading) return;
+
+      const round = rounds.find((r) => r.id === roundId);
+      if (!round || round.debateTriggered) return;
+
+      setLoading(true);
+
+      const allWave1Responses: Partial<Record<AgentId, string>> = {};
+      for (const [id, resp] of Object.entries(round.responses)) {
+        if (resp?.text) allWave1Responses[id as AgentId] = resp.text;
+      }
+
+      const activeInRound = AGENTS.filter((a) => round.responses[a.id]);
+
+      // Mark debate triggered
+      setRounds((prev) =>
+        prev.map((r) =>
+          r.id === roundId
+            ? {
+                ...r,
+                debateTriggered: true,
+                debateResponses: Object.fromEntries(
+                  activeInRound.map((a) => [a.id, { text: "", loading: true }])
+                ) as Partial<Record<AgentId, RoundResponse>>,
+              }
+            : r
+        )
+      );
+      await fetch("/api/rounds", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roundId, debate_triggered: true }),
+      });
+
+      // Stream all debate responses in parallel
+      const debateResults = await Promise.all(
+        activeInRound.map(async (agent) => {
+          const text = await streamFromEndpoint(
+            "/api/debate",
+            {
+              agentId: agent.id,
+              brain,
+              question: round.question,
+              history: (agentHistoryRef.current[agent.id] ?? []).slice(-4),
+              roundId,
+              allWave1Responses,
+            },
+            roundId,
+            agent.id,
+            "debateResponses"
+          );
+          return { agentId: agent.id, text };
+        })
+      );
+
+      // Mark debate complete
+      setRounds((prev) =>
+        prev.map((r) =>
+          r.id === roundId ? { ...r, debateComplete: true } : r
+        )
+      );
+      await fetch("/api/rounds", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ roundId, debate_complete: true }),
+      });
+
+      // Auto-run synthesis
+      const allDebateResponses: Partial<Record<AgentId, string>> = {};
+      for (const { agentId, text } of debateResults) {
+        if (text) allDebateResponses[agentId] = text;
+      }
+      await runSynthesis(roundId, round.question, allWave1Responses, allDebateResponses);
+
+      setLoading(false);
+    },
+    [loading, rounds, brain]
+  );
+
+  // ── Synthesis ──────────────────────────────────────────────────────────────
+  async function runSynthesis(
+    roundId: string,
+    question: string,
+    allWave1Responses: Partial<Record<AgentId, string>>,
+    allDebateResponses: Partial<Record<AgentId, string>>
+  ) {
+    setRounds((prev) =>
+      prev.map((r) =>
+        r.id === roundId ? { ...r, synthesisLoading: true } : r
+      )
+    );
+
+    let fullText = "";
+    try {
+      const res = await fetch("/api/synthesis", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          roundId,
+          brain,
+          question,
+          allWave1Responses,
+          allDebateResponses,
+        }),
+      });
+
+      if (!res.ok) throw new Error("Synthesis failed");
+
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const data = line.slice(6);
+          if (data === "[DONE]") break;
+          try {
+            const { text } = JSON.parse(data) as { text: string };
+            fullText += text;
+            setRounds((prev) =>
+              prev.map((r) =>
+                r.id === roundId ? { ...r, synthesis: fullText } : r
+              )
+            );
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* synthesis failure is non-fatal */ }
+
+    setRounds((prev) =>
+      prev.map((r) =>
+        r.id === roundId
+          ? { ...r, synthesisLoading: false, synthesisComplete: true }
+          : r
+      )
+    );
+  }
+
+  if (loadingRounds) {
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-border border-t-primary rounded-full animate-spin" />
+          <p className="text-sm text-muted-foreground">Loading your council...</p>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -222,7 +482,7 @@ export function Council({ brain }: { brain: CompanyBrain }) {
       <BrainBanner brain={brain} />
 
       <div className="flex-1 flex overflow-hidden">
-        {/* ── Sidebar ───────────────────────────────────────────────── */}
+        {/* Sidebar */}
         <aside className="w-60 border-r border-border flex-shrink-0 flex flex-col overflow-hidden">
           <div className="flex-1 overflow-y-auto py-4 px-3 flex flex-col gap-1">
             <p className="px-2 text-[10px] font-bold text-muted-foreground uppercase tracking-widest mb-2">
@@ -240,8 +500,6 @@ export function Council({ brain }: { brain: CompanyBrain }) {
             {rounds.length > 0 && (
               <>
                 <div className="my-3 border-t border-border" />
-
-                {/* History header */}
                 <div className="flex items-center justify-between px-2 mb-1">
                   <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest">
                     History
@@ -293,7 +551,7 @@ export function Council({ brain }: { brain: CompanyBrain }) {
           </div>
         </aside>
 
-        {/* ── Main thread ───────────────────────────────────────────── */}
+        {/* Main thread */}
         <main className="flex-1 flex flex-col overflow-hidden">
           {rounds.length === 0 ? (
             <EmptyState brain={brain} onAsk={askCouncil} />
@@ -308,6 +566,7 @@ export function Council({ brain }: { brain: CompanyBrain }) {
                     id={`round-${round.id}`}
                     councilLoading={loading}
                     onFollowUp={(agentId, question) => askOneAgent(agentId, question)}
+                    onGoDeeper={() => goDeeper(round.id)}
                   />
                 ))}
                 <div ref={bottomRef} className="h-2" />
@@ -330,17 +589,30 @@ function RoundBlock({
   id,
   councilLoading,
   onFollowUp,
+  onGoDeeper,
 }: {
   round: Round;
   roundNumber: number;
   id: string;
   councilLoading: boolean;
   onFollowUp: (agentId: AgentId, question: string) => void;
+  onGoDeeper: () => void;
 }) {
-  const entries = Object.entries(round.responses) as [AgentId, RoundResponse][];
+  const wave1Entries = Object.entries(round.responses) as [AgentId, RoundResponse][];
+  const wave2Entries = Object.entries(round.debateResponses) as [AgentId, RoundResponse][];
   const directedAgent = round.directedTo
     ? AGENTS.find((a) => a.id === round.directedTo)
     : null;
+
+  const allWave1Done =
+    round.wave1Complete &&
+    wave1Entries.every(([, r]) => !r.loading);
+
+  const canGoDeeper =
+    allWave1Done &&
+    !round.directedTo &&
+    !round.debateTriggered &&
+    !councilLoading;
 
   return (
     <div id={id} className="flex flex-col gap-5 animate-fade-in">
@@ -369,25 +641,148 @@ function RoundBlock({
         </div>
       </div>
 
-      {/* Agent responses */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {entries.map(([agentId, response]) => {
-          const agent = AGENTS.find((a) => a.id === agentId);
-          if (!agent) return null;
+      {/* Wave 1 responses */}
+      {wave1Entries.length > 0 && (
+        <div className="flex flex-col gap-3">
+          {!directedAgent && (
+            <p className="text-[10px] font-bold text-muted-foreground uppercase tracking-widest px-1">
+              Wave 1 — Independent Analysis
+            </p>
+          )}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+            {wave1Entries.map(([agentId, response]) => {
+              const agent = AGENTS.find((a) => a.id === agentId);
+              if (!agent) return null;
+              return (
+                <AgentResponse
+                  key={agentId}
+                  agent={agent}
+                  message={response}
+                  onFollowUp={
+                    !councilLoading && !response.loading
+                      ? (question) => onFollowUp(agentId, question)
+                      : undefined
+                  }
+                />
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Go Deeper button */}
+      {canGoDeeper && (
+        <div className="flex justify-center pt-1">
+          <button
+            onClick={onGoDeeper}
+            className="group flex items-center gap-2.5 rounded-xl border border-primary/25 bg-primary/5 hover:bg-primary/10 hover:border-primary/40 px-5 py-2.5 text-sm font-medium text-primary transition-all duration-200"
+          >
+            <MessageSquare className="w-4 h-4" />
+            Go Deeper — Start the Debate
+            <span className="text-[10px] text-primary/60 font-normal">Wave 2</span>
+          </button>
+        </div>
+      )}
+
+      {/* Wave 2 — Debate */}
+      {round.debateTriggered && (
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2 px-1">
+            <p className="text-[10px] font-bold text-orange-400/80 uppercase tracking-widest">
+              Wave 2 — The Debate
+            </p>
+            {!round.debateComplete && (
+              <Loader2 className="w-3 h-3 text-orange-400/60 animate-spin" />
+            )}
+          </div>
+          <div className="rounded-xl border border-orange-400/15 bg-orange-400/[0.03] p-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {wave2Entries.map(([agentId, response]) => {
+                const agent = AGENTS.find((a) => a.id === agentId);
+                if (!agent) return null;
+                return (
+                  <AgentResponse
+                    key={agentId}
+                    agent={agent}
+                    message={response}
+                    compact
+                  />
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Synthesis */}
+      {(round.synthesis || round.synthesisLoading) && (
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2 px-1">
+            <Sparkles className="w-3.5 h-3.5 text-primary" />
+            <p className="text-[10px] font-bold text-primary/80 uppercase tracking-widest">
+              Council Synthesis
+            </p>
+            {round.synthesisLoading && !round.synthesisComplete && (
+              <Loader2 className="w-3 h-3 text-primary/60 animate-spin" />
+            )}
+          </div>
+          <div className="rounded-xl border border-primary/20 bg-gradient-to-br from-primary/[0.06] to-primary/[0.02] p-5">
+            {round.synthesis ? (
+              <SynthesisContent text={round.synthesis} />
+            ) : (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse" />
+                Synthesizing council perspectives...
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Synthesis content renderer ─────────────────────────────────────────────────
+
+function SynthesisContent({ text }: { text: string }) {
+  const lines = text.split("\n");
+  return (
+    <div className="flex flex-col gap-1.5 text-sm text-foreground leading-relaxed">
+      {lines.map((line, i) => {
+        if (!line.trim()) return <div key={i} className="h-1" />;
+        if (line.startsWith("**") && line.endsWith("**") && line.length > 4) {
           return (
-            <AgentResponse
-              key={agentId}
-              agent={agent}
-              message={response}
-              onFollowUp={
-                !councilLoading && !response.loading
-                  ? (question) => onFollowUp(agentId, question)
-                  : undefined
-              }
-            />
+            <p key={i} className="font-bold text-primary mt-2 first:mt-0">
+              {line.slice(2, -2)}
+            </p>
           );
-        })}
-      </div>
+        }
+        if (line.startsWith("**") && line.includes("**")) {
+          const parts = line.split(/\*\*(.*?)\*\*/g);
+          return (
+            <p key={i}>
+              {parts.map((part, j) =>
+                j % 2 === 1 ? (
+                  <strong key={j} className="font-semibold text-foreground">
+                    {part}
+                  </strong>
+                ) : (
+                  part
+                )
+              )}
+            </p>
+          );
+        }
+        if (line.startsWith("- ") || line.startsWith("• ")) {
+          return (
+            <p key={i} className="pl-3 flex gap-2">
+              <span className="text-primary/60 flex-shrink-0">·</span>
+              {line.slice(2)}
+            </p>
+          );
+        }
+        return <p key={i}>{line}</p>;
+      })}
     </div>
   );
 }
@@ -419,8 +814,7 @@ function EmptyState({ brain, onAsk }: { brain: CompanyBrain; onAsk: (q: string) 
           <span className="text-primary">{brain.startupName}</span>?
         </h2>
         <p className="mt-3 text-sm text-muted-foreground leading-relaxed">
-          Your council debates every question in parallel — market research, devil&apos;s advocate, growth,
-          ICP, GTM, and investor lens. All at once.
+          Ask anything. Get independent analysis from 6 advisors, then trigger the debate to make them react to each other.
         </p>
       </div>
 

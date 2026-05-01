@@ -10,9 +10,11 @@ interface Props {
   message: RoundResponse;
   /** When provided, a follow-up input is shown once the response is complete. */
   onFollowUp?: (question: string) => void;
+  /** Compact mode for debate wave — hides follow-up, uses smaller header. */
+  compact?: boolean;
 }
 
-export function AgentResponse({ agent, message, onFollowUp }: Props) {
+export function AgentResponse({ agent, message, onFollowUp, compact }: Props) {
   const isStreaming = message.loading && message.text.length > 0;
   const isThinking = message.loading && message.text.length === 0;
   const isDone = !message.loading && !message.error && !!message.text;
@@ -67,7 +69,7 @@ export function AgentResponse({ agent, message, onFollowUp }: Props) {
       </div>
 
       {/* ── Follow-up footer ──────────────────────────────────────────── */}
-      {isDone && onFollowUp && (
+      {isDone && onFollowUp && !compact && (
         <FollowUpSection agent={agent} onSubmit={onFollowUp} />
       )}
     </div>
