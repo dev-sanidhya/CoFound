@@ -129,9 +129,23 @@ SUPABASE_SERVICE_ROLE_KEY=...          # Service role key (server-side only)
 
 ---
 
+## Phase 5 — Production Hardening (COMPLETE)
+
+Six production-readiness fixes:
+
+1. **Security** — confirmed `.gitignore` excludes `.env` files, never committed
+2. **Model tiering** — Wave 1 uses `claude-sonnet-4-6` (faster, cheaper); Wave 2 + synthesis keep `claude-opus-4-5`
+3. **Synthesize Wave 1 button** — after Wave 1, two buttons appear: "Synthesize Wave 1" (1 call, cheap) and "Go Deeper" (Wave 2 debate + synthesis). `buildSynthesisPrompt` conditionally omits the Wave 2 section when `debateResponses` is empty.
+4. **Stream timeout + Supabase rate limiter** — `streamFromEndpoint` has a 90s `AbortController` timeout; rate limiting uses a `rate_limits` Supabase table (falls back to in-memory if table absent). Migration applied live.
+5. **Context notes cap** — server-side 5000-char trim in `/api/brain/route.ts`; onboarding textarea has `maxLength={5000}`, visible counter, and a highlighted bordered box to signal importance.
+6. **Cost warning** — clicking "Go Deeper" now shows an inline confirmation card explaining the 6-call Opus cost before executing Wave 2.
+
+---
+
 ## Next Steps / Ideas
 
 - Document upload: PDF/CSV for richer context (pitch deck, financial model)
 - Multiple companies per user
 - Shareable council session links
 - Model cost display per session
+- Periodic cleanup of `rate_limits` table old rows (pg_cron)
