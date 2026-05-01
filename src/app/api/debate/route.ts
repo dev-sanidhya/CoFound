@@ -1,42 +1,14 @@
 import { NextRequest } from "next/server";
 import Anthropic from "@anthropic-ai/sdk";
-import { getAgent, AgentId } from "@/lib/agents";
+import { getAgent, AgentId, AGENTS } from "@/lib/agents";
 import { CompanyBrain } from "@/lib/brain";
 import { getSession } from "@/lib/session";
-import { getSupabase, getUserId } from "@/lib/supabase";
+import { getSupabase } from "@/lib/supabase";
 import { ConversationTurn } from "@/lib/transcript";
 
 export const runtime = "nodejs";
 
-const rateMap = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 30;
-const RATE_WINDOW = 60 * 1000;
-
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateMap.get(ip);
-  if (!entry || now > entry.resetAt) {
-    rateMap.set(ip, { count: 1, resetAt: now + RATE_WINDOW });
-    return false;
-  }
-  if (entry.count >= RATE_LIMIT) return true;
-  entry.count++;
-  return false;
-}
-
 export async function POST(req: NextRequest) {
-  const ip =
-    req.headers.get("x-forwarded-for")?.split(",")[0].trim() ??
-    req.headers.get("x-real-ip") ??
-    "unknown";
-
-  if (isRateLimited(ip)) {
-    return new Response(
-      JSON.stringify({ error: "Too many requests — slow down a bit." }),
-      { status: 429, headers: { "Content-Type": "application/json" } }
-    );
-  }
-
   const session = await getSession();
   const oauthToken = session?.accessToken ?? null;
   const devApiKey = process.env.ANTHROPIC_API_KEY ?? null;
@@ -51,9 +23,10 @@ export async function POST(req: NextRequest) {
     brain: CompanyBrain;
     question: string;
     history?: ConversationTurn[];
-    roundId?: string;
+    roundId: string;
+    allWave1Responses: Partial<Record<AgentId, string>>;
   };
-  const { agentId, brain, question, history = [], roundId } = body;
+  const { agentId, brain, question, history = [], roundId, allWave1Responses } = body;
 
   const agent = getAgent(agentId);
   if (!agent) {
@@ -66,12 +39,31 @@ export async function POST(req: NextRequest) {
     ? new Anthropic({ authToken: oauthToken })
     : new Anthropic({ apiKey: devApiKey! });
 
+  const otherAgentSummaries = AGENTS.filter(
+    (a) => a.id !== agentId && allWave1Responses[a.id]
+  )
+    .map((a) => `**${a.emoji} ${a.name}:**\n${allWave1Responses[a.id]}`)
+    .join("\n\n---\n\n");
+
+  const myWave1 = allWave1Responses[agentId];
+  const debateInstruction = `The council independently analyzed this question: "${question}"
+
+${myWave1 ? `Your own Wave 1 response was:\n${myWave1}\n\n` : ""}The other advisors said:\n\n${otherAgentSummaries}
+
+Now enter the debate. You must:
+1. Identify where you agree with other advisors — and why that alignment matters
+2. Challenge at least one position you disagree with, with specific reasoning rooted in your role
+3. Surface something important that the council collectively missed or underweighted
+4. Give ${brain.startupName} a clear takeaway from your perspective in this debate
+
+This is not a summary. It is a reaction. Be direct, be specific, be willing to be unpopular.`;
+
   const messages: Anthropic.MessageParam[] = [
-    ...history.slice(-6).map((t) => ({
+    ...history.slice(-4).map((t) => ({
       role: t.role as "user" | "assistant",
       content: t.content,
     })),
-    { role: "user", content: question },
+    { role: "user", content: debateInstruction },
   ];
 
   const stream = await client.messages.stream({
@@ -101,21 +93,19 @@ export async function POST(req: NextRequest) {
         }
         controller.enqueue(encoder.encode("data: [DONE]\n\n"));
 
-        if (roundId && fullText && (oauthToken || devApiKey)) {
-          const userId = getUserId(oauthToken ?? devApiKey!);
+        if (fullText) {
           const supabase = getSupabase();
           await supabase.from("responses").upsert(
             {
               round_id: roundId,
               agent_id: agentId,
-              wave: 1,
+              wave: 2,
               content: fullText,
               is_complete: true,
               updated_at: new Date().toISOString(),
             },
             { onConflict: "round_id,agent_id,wave" }
           );
-          void userId;
         }
       } finally {
         controller.close();

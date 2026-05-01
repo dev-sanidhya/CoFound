@@ -60,4 +60,5 @@ CREATE TABLE IF NOT EXISTS responses (
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS responses_round_agent_wave_idx ON responses(round_id, agent_id, wave);
 CREATE INDEX IF NOT EXISTS responses_round_id_idx ON responses(round_id);
