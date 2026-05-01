@@ -62,3 +62,23 @@ CREATE TABLE IF NOT EXISTS responses (
 
 CREATE UNIQUE INDEX IF NOT EXISTS responses_round_agent_wave_idx ON responses(round_id, agent_id, wave);
 CREATE INDEX IF NOT EXISTS responses_round_id_idx ON responses(round_id);
+
+-- ── Artifacts (action items extracted from synthesis) ─────────────────────────
+
+CREATE TABLE IF NOT EXISTS artifacts (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  company_id  UUID NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  round_id    UUID REFERENCES rounds(id) ON DELETE SET NULL,
+  type        TEXT NOT NULL DEFAULT 'action',  -- 'action' | 'risk' | 'experiment'
+  content     TEXT NOT NULL,
+  agent_id    TEXT,
+  completed   BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS artifacts_company_id_idx ON artifacts(company_id);
+CREATE INDEX IF NOT EXISTS artifacts_round_id_idx   ON artifacts(round_id);
+
+-- ── Context notes column on companies ────────────────────────────────────────
+-- (added via migration; included here for fresh installs)
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS context_notes TEXT NOT NULL DEFAULT '';

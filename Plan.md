@@ -106,10 +106,32 @@ SUPABASE_SERVICE_ROLE_KEY=...          # Service role key (server-side only)
 
 ---
 
-## Next Steps / Phase 3 Ideas
+---
+
+## Phase 3 — Context Grounding (COMPLETE)
+
+**Context Notes** — free-form rich context field on the company brain:
+- Added `context_notes` column to `companies` table
+- New `contextNotes` field on `CompanyBrain` type
+- Injected into every agent's system prompt via `formatBrainForPrompt` when non-empty
+- Editable in onboarding step 4 (optional textarea — paste pitch deck text, research notes, competitive analysis, financials)
+
+---
+
+## Phase 4 — Actionable Artifacts (COMPLETE)
+
+**Artifacts table** — action items, risks, and experiments extracted from synthesis:
+- `artifacts` table: id, company_id, round_id, type (action/risk/experiment), content, completed
+- `/api/artifacts` — GET (load by company), POST (bulk insert), PATCH (toggle completed)
+- After synthesis completes, synthesis text is parsed for DECISION items (numbered list → `action`) and TENSIONS items (bullets → `risk`)
+- Artifacts saved to DB and shown in Council sidebar as a live checkable list
+- `ArtifactsPanel` component — collapsible sections per type, check/uncheck with optimistic UI, persists to DB
+
+---
+
+## Next Steps / Ideas
 
 - Document upload: PDF/CSV for richer context (pitch deck, financial model)
-- Context injection: key facts from past rounds injected into future rounds
 - Multiple companies per user
 - Shareable council session links
 - Model cost display per session

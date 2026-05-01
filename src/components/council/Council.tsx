@@ -12,8 +12,10 @@ import {
 } from "@/lib/transcript";
 import { AgentCard } from "./AgentCard";
 import { AgentResponse } from "./AgentResponse";
+import { ArtifactsPanel } from "./ArtifactsPanel";
 import { QuestionBar } from "./QuestionBar";
 import { BrainBanner } from "./BrainBanner";
+import { Artifact } from "@/app/api/artifacts/route";
 import { v4 as uuidv4 } from "uuid";
 import {
   Sparkles,
@@ -38,6 +40,7 @@ interface CouncilProps {
 
 export function Council({ brain, companyId }: CouncilProps) {
   const [rounds, setRounds] = useState<Round[]>([]);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [activeAgents, setActiveAgents] = useState<Set<AgentId>>(
     new Set(AGENTS.map((a) => a.id))
   );
@@ -49,20 +52,28 @@ export function Council({ brain, companyId }: CouncilProps) {
 
   // Load persisted rounds on mount
   useEffect(() => {
-    async function loadRounds() {
+    async function loadData() {
       try {
-        const res = await fetch(`/api/rounds?companyId=${companyId}`);
-        if (!res.ok) return;
-        const { rounds: dbRounds } = await res.json();
-        if (dbRounds.length > 0) {
-          setRounds(dbRounds);
-          agentHistoryRef.current = buildAgentHistory(dbRounds);
+        const [roundsRes, artifactsRes] = await Promise.all([
+          fetch(`/api/rounds?companyId=${companyId}`),
+          fetch(`/api/artifacts?companyId=${companyId}`),
+        ]);
+        if (roundsRes.ok) {
+          const { rounds: dbRounds } = await roundsRes.json();
+          if (dbRounds.length > 0) {
+            setRounds(dbRounds);
+            agentHistoryRef.current = buildAgentHistory(dbRounds);
+          }
+        }
+        if (artifactsRes.ok) {
+          const { artifacts: dbArtifacts } = await artifactsRes.json();
+          setArtifacts(dbArtifacts ?? []);
         }
       } finally {
         setLoadingRounds(false);
       }
     }
-    loadRounds();
+    loadData();
   }, [companyId]);
 
   useEffect(() => {
@@ -87,6 +98,63 @@ export function Council({ brain, companyId }: CouncilProps) {
     setRounds([]);
     agentHistoryRef.current = {};
   }, []);
+
+  const toggleArtifact = useCallback(async (id: string, completed: boolean) => {
+    setArtifacts((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, completed } : a))
+    );
+    await fetch("/api/artifacts", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id, completed }),
+    });
+  }, []);
+
+  // Parse synthesis text and save action items, risks, experiments as artifacts
+  async function extractAndSaveArtifacts(
+    roundId: string,
+    synthesisText: string
+  ) {
+    const items: { type: "action" | "risk" | "experiment"; content: string }[] = [];
+
+    // Extract numbered items under DECISION section
+    const decisionMatch = synthesisText.match(
+      /\*\*DECISION\*\*[\s\S]*?(?=\*\*THE ONE THING\*\*|\*\*TENSIONS\*\*|\*\*CONSENSUS\*\*|$)/i
+    );
+    if (decisionMatch) {
+      const numberedRe = /^\d+\.\s+(.+)$/gm;
+      let m: RegExpExecArray | null;
+      while ((m = numberedRe.exec(decisionMatch[0])) !== null) {
+        if (m[1].trim()) items.push({ type: "action", content: m[1].trim() });
+      }
+    }
+
+    // Extract bullet items under TENSIONS section as risks
+    const tensionsMatch = synthesisText.match(
+      /\*\*TENSIONS\*\*[\s\S]*?(?=\*\*DECISION\*\*|\*\*CONSENSUS\*\*|\*\*THE ONE THING\*\*|$)/i
+    );
+    if (tensionsMatch) {
+      const bulletRe = /^[-•]\s+(.+)$/gm;
+      let m: RegExpExecArray | null;
+      while ((m = bulletRe.exec(tensionsMatch[0])) !== null) {
+        if (m[1].trim()) items.push({ type: "risk", content: m[1].trim() });
+      }
+    }
+
+    if (items.length === 0) return;
+
+    try {
+      const res = await fetch("/api/artifacts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ companyId, roundId, items }),
+      });
+      if (res.ok) {
+        const { artifacts: newArtifacts } = await res.json();
+        setArtifacts((prev) => [...prev, ...newArtifacts]);
+      }
+    } catch { /* non-fatal */ }
+  }
 
   // ── SSE stream helper ──────────────────────────────────────────────────────
   async function streamFromEndpoint(
@@ -464,6 +532,10 @@ export function Council({ brain, companyId }: CouncilProps) {
           : r
       )
     );
+
+    if (fullText) {
+      await extractAndSaveArtifacts(roundId, fullText);
+    }
   }
 
   if (loadingRounds) {
@@ -496,6 +568,13 @@ export function Council({ brain, companyId }: CouncilProps) {
                 onToggle={() => toggleAgent(agent.id)}
               />
             ))}
+
+            {artifacts.length > 0 && (
+              <>
+                <div className="my-3 border-t border-border" />
+                <ArtifactsPanel artifacts={artifacts} onToggle={toggleArtifact} />
+              </>
+            )}
 
             {rounds.length > 0 && (
               <>

@@ -22,6 +22,7 @@ function brainToRow(brain: CompanyBrain, userId: string) {
     gtm_goal: brain.gtmGoal,
     biggest_challenge: brain.biggestChallenge,
     next_milestone: brain.nextMilestone,
+    context_notes: brain.contextNotes ?? "",
     updated_at: new Date().toISOString(),
   };
 }
@@ -44,6 +45,7 @@ function rowToBrain(row: Record<string, any>): CompanyBrain & { id: string } {
     gtmGoal: row.gtm_goal,
     biggestChallenge: row.biggest_challenge,
     nextMilestone: row.next_milestone,
+    contextNotes: row.context_notes ?? "",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

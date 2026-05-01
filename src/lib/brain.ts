@@ -33,6 +33,9 @@ export interface CompanyBrain {
   biggestChallenge: string;
   nextMilestone: string;
 
+  // Context — free-form rich context (pitch deck text, research notes, etc.)
+  contextNotes?: string;
+
   // Meta
   createdAt: string;
   updatedAt: string;
@@ -76,5 +79,6 @@ export function formatBrainForPrompt(brain: CompanyBrain): string {
 **GTM Goal:** ${brain.gtmGoal}
 **Biggest Challenge:** ${brain.biggestChallenge}
 **Next Milestone:** ${brain.nextMilestone}
+${brain.contextNotes?.trim() ? `\n## Additional Context (pitch deck, research, notes)\n${brain.contextNotes.trim()}` : ""}
 `.trim();
 }

@@ -36,6 +36,7 @@ async function fetchCompany(
     gtmGoal: data.gtm_goal,
     biggestChallenge: data.biggest_challenge,
     nextMilestone: data.next_milestone,
+    contextNotes: data.context_notes ?? "",
     createdAt: data.created_at,
     updatedAt: data.updated_at,
   };
