@@ -317,25 +317,26 @@ export default function OnboardingPage() {
               <Field label="GTM goal — next 90 days" hint="What does success look like in 3 months? One clear outcome." value={data.gtmGoal} onChange={(v) => set("gtmGoal", v)} placeholder="Get to 50 paying customers, hit $10K MRR..." multiline required hasError={errorFields.has("gtmGoal")} maxLength={300} />
               <Field label="Biggest challenge right now" hint="What's the one thing keeping you up at night? Don't sugarcoat it." value={data.biggestChallenge} onChange={(v) => set("biggestChallenge", v)} placeholder="Can't find a scalable acquisition channel..." multiline required hasError={errorFields.has("biggestChallenge")} maxLength={300} />
               <Field label="Next milestone" hint="The single most important thing to hit in the next 4-6 weeks." value={data.nextMilestone} onChange={(v) => set("nextMilestone", v)} placeholder="e.g. 10 paid pilots, seed round close, ship v2" />
-              <div className="flex flex-col gap-1.5 pt-1">
+              <div className="flex flex-col gap-1.5 pt-1 rounded-xl border border-primary/20 bg-primary/[0.03] p-4">
                 <div className="flex items-center justify-between">
                   <label className="text-sm font-semibold text-foreground flex items-center gap-1.5">
                     Rich context
-                    <span className="text-[10px] font-normal text-muted-foreground bg-muted rounded px-1.5 py-0.5">optional</span>
+                    <span className="text-[10px] font-normal text-muted-foreground bg-muted rounded px-1.5 py-0.5">optional but powerful</span>
                   </label>
-                  {data.contextNotes && (
-                    <span className="text-[10px] text-muted-foreground">{data.contextNotes.length} chars</span>
-                  )}
+                  <span className={`text-[10px] flex-shrink-0 ${(data.contextNotes?.length ?? 0) > 4500 ? "text-destructive" : "text-muted-foreground"}`}>
+                    {data.contextNotes?.length ?? 0}/5000
+                  </span>
                 </div>
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Paste anything — pitch deck text, user research notes, competitive analysis, financial summary. The more context your council has, the sharper the advice.
+                  Paste your pitch deck, user research, competitive analysis, or financial summary. This is injected into every advisor&apos;s context — the richer this is, the more specific and actionable their advice becomes.
                 </p>
                 <textarea
                   className="w-full rounded-xl border border-border bg-card px-4 py-3 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary/40 focus:ring-2 focus:ring-primary/10 transition-all duration-200 resize-none leading-relaxed"
                   rows={5}
+                  maxLength={5000}
                   value={data.contextNotes ?? ""}
                   onChange={(e) => set("contextNotes", e.target.value)}
-                  placeholder={"Our pitch deck summary:\n- Problem: founders spend 10+ hrs/week on strategy with no sounding board\n- Solution: 6 AI advisors that debate in parallel...\n\nUser research (5 interviews):\n- Pain point #1: ..."}
+                  placeholder={"Pitch deck summary:\n- Problem: founders spend 10+ hrs/week on strategy with no sounding board\n- Solution: 6 AI advisors that debate in parallel...\n\nUser research (5 interviews):\n- Pain point #1: ..."}
                 />
               </div>
             </>

@@ -76,6 +76,9 @@ export async function POST(req: NextRequest) {
 
   const userId = getUserId(session.accessToken);
   const { brain } = (await req.json()) as { brain: CompanyBrain };
+  if (brain.contextNotes && brain.contextNotes.length > 5000) {
+    brain.contextNotes = brain.contextNotes.slice(0, 5000);
+  }
   const supabase = getSupabase();
 
   const { data: existing } = await supabase
